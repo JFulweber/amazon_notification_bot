@@ -135,32 +135,38 @@ process.on('exit', (code) => {
     });
 })
 
+var notification_cooldown = [];
+
 function amazonCheck(){
     var asinList = [];
-    var resultList = [];
     for(var id in config){
         config[id].forEach((entry)=>{
             if(asinList.indexOf(entry.asin)==-1) asinList.push(entry.asin);
         })
     }
-    console.log(asinList);
     asinList.forEach(asin=>{
         awsClient.itemLookup({
             idType:'ASIN',
             itemId:asin,
             responseGroup: 'Medium'
         }).then((res)=>{
-            console.log(res[0].OfferSummary[0].LowestNewPrice[0].Amount[0] / 100);
             for(var id in config){
                 config[id].forEach((entry)=>{
                     if(entry.asin == asin && res[0].OfferSummary[0].LowestNewPrice[0].Amount[0]/100 <= entry.price ){
+                        if(notification_cooldown[id]==null) notification_cooldown[id] = {};
+                        if (notification_cooldown[id].status == true && notification_cooldown[id].price >= res[0].OfferSummary[0].LowestNewPrice[0].Amount[0] / 100 ){
+                            return;
+                        }
                         client.fetchUser(id).then((user)=>{
                             user.send(`ALERT FROM AMAZON PRICE UPDATE! \`${res[0].ItemAttributes[0].Title[0]}\` has hit a price below your minimum threshold, currently at $${res[0].OfferSummary[0].LowestNewPrice[0].Amount[0] / 100}! Better snag it while you can!` )
+                            notification_cooldown[id] = { price: res[0].OfferSummary[0].LowestNewPrice[0].Amount[0] / 100, status: true };
+                            setTimeout(function () {
+                                notification_cooldown[id] = { price: 0, status: false };
+                            }, 1000 * 60)
                         })
                     }
                 })
             }
-            console.log(queryRes);
         }).catch(err=>{
             console.log(JSON.stringify(err));
         })
