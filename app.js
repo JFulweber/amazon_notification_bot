@@ -22,10 +22,9 @@ fs.open('./config/people.json', 'wx', (err, fd) => {
         if (err.code === 'ENOENT') {
             console.log('Config does not exist');
             return;
-        }
-        else if(err.code === "EEXIST"){
+        } else if (err.code === "EEXIST") {
             console.log("already exists")
-            
+
             return;
         }
     }
@@ -33,7 +32,8 @@ fs.open('./config/people.json', 'wx', (err, fd) => {
 });
 
 fs.readFile('./config/people.json', {
-    encoding: 'utf8'}, (err, data) => {
+    encoding: 'utf8'
+}, (err, data) => {
     config = JSON.parse(data);
 })
 
@@ -59,33 +59,34 @@ client.on('message', message => {
 
     if (textChannels.includes(message.channel) && message.content == '!anb') {
         message.author.send('Hi! This is the Amazon Notification Bot created by <@127150373931712512>. Type !help for available commands.')
-        if(!config[message.author.id])
+        if (!config[message.author.id])
             config[message.author.id] = []
         return;
     }
 
     if (message.channel.type === 'dm' && config[message.author.id]) {
-        var {content} = message;
+        var {
+            content
+        } = message;
         if (content.startsWith(prefix)) {
             args = content.split(' ');
             var command = args[0].toLowerCase();
-            command = command.replace(prefix,"");
+            command = command.replace(prefix, "");
             args = args.slice(1, args.size);
             // ONLY THINGS AFTER COMMAND
-            if(command=="add"){
-                if(args.length!=2 || Number.isNaN(args[0])) {
+            if (command == "add") {
+                if (args.length != 2 || Number.isNaN(args[0])) {
                     message.reply(`Usage: ${prefix}add \`<ASIN>\` \`<PRICE THRESHOLD>\`. You can use ${prefix}search \`<Item name>\` to look up item's ASIN's.`)
-                }
-                else{
+                } else {
                     awsClient.itemLookup({
-                        idType:"ASIN",
-                        itemId:args[0]
-                    }).then((res)=>{
+                        idType: "ASIN",
+                        itemId: args[0]
+                    }).then((res) => {
                         config[message.author.id].push({
                             asin: args[0],
                             price: args[1]
                         })
-                    }).catch((err)=>{
+                    }).catch((err) => {
                         message.reply("An error occured. This is likely due to the provided ASIN ID being incorrect or not found by Amazon. Please double check that it is correct.")
                     })
                 }
@@ -137,40 +138,60 @@ process.on('exit', (code) => {
 
 var notification_cooldown = [];
 
-function amazonCheck(){
+function checkLoop() {
     var asinList = [];
-    for(var id in config){
-        config[id].forEach((entry)=>{
-            if(asinList.indexOf(entry.asin)==-1) asinList.push(entry.asin);
+    var resList = [];
+    for (var id in config) {
+        config[id].forEach((entry) => {
+            if (asinList.indexOf(entry.asin) == -1) asinList.push(entry.asin);
         })
     }
-    asinList.forEach(asin=>{
-        awsClient.itemLookup({
-            idType:'ASIN',
-            itemId:asin,
-            responseGroup: 'Medium'
-        }).then((res)=>{
-            for(var id in config){
-                config[id].forEach((entry)=>{
-                    if(entry.asin == asin && res[0].OfferSummary[0].LowestNewPrice[0].Amount[0]/100 <= entry.price ){
-                        if(notification_cooldown[id]==null) notification_cooldown[id] = {};
-                        if (notification_cooldown[id].status == true && notification_cooldown[id].price >= res[0].OfferSummary[0].LowestNewPrice[0].Amount[0] / 100 ){
-                            return;
-                        }
-                        client.fetchUser(id).then((user)=>{
-                            user.send(`ALERT FROM AMAZON PRICE UPDATE! \`${res[0].ItemAttributes[0].Title[0]}\` has hit a price below your minimum threshold, currently at $${res[0].OfferSummary[0].LowestNewPrice[0].Amount[0] / 100}! Better snag it while you can!` )
-                            notification_cooldown[id] = { price: res[0].OfferSummary[0].LowestNewPrice[0].Amount[0] / 100, status: true };
-                            setTimeout(function () {
-                                notification_cooldown[id] = { price: 0, status: false };
-                            }, 1000 * 60)
-                        })
-                    }
-                })
-            }
-        }).catch(err=>{
-            console.log(JSON.stringify(err));
-        })
-    });
+
+    getAllResults(asinList).then((data)=>{
+        for(var id in config){
+            config[id].forEach((entry)=>{
+                var asin = entry.asin;
+                if (!notification_cooldown[id]) notification_cooldown[id] = {};
+                if (!notification_cooldown[id].asin) notification_cooldown[id].asin = { price: 0, status: false };
+                var asin_info = getSpecificAsinResult(asin, data);
+                var decPrice = asin_info.OfferSummary[0].LowestNewPrice[0].Amount[0]/100;
+                var title = asin_info.ItemAttributes[0].Title[0];
+                var link = asin_info.DetailPageURL[0];
+                if(decPrice<=entry.price){
+                    client.fetchUser(id).then(u=>{
+                        if(notification_cooldown[id].asin.status==true) return;
+                        u.send(`Yo! \`${title}\` is $${decPrice} rn! Available @ (if you don't see the price listed as $${decPrice}, check other sellers on the Amazon page.) ${link}`).then(()=>{
+                            notification_cooldown[id].asin = {price:decPrice,status: true};
+                            setTimeout(function(){
+                                notification_cooldown[id].asin = {status: false};
+                            }, 60*1000);
+                        });
+                    })
+                }
+            })
+        }
+    })
 }
 
-setInterval(amazonCheck, 1000 * 5);
+async function getAllResults(asinList){
+    var PromiseList = [];
+    var ResultList = [];
+    asinList.forEach((asin)=>{
+        PromiseList.push(awsClient.itemLookup({
+            idType: 'ASIN',
+            itemId: asin,
+            responseGroup: 'Medium'
+        }))
+    })
+    return Promise.resolve(Promise.all(PromiseList));
+}
+
+function getSpecificAsinResult(asin, results){
+    var specificRes = {};
+    results.forEach((res)=>{
+        if(asin==res[0].ASIN[0]) specificRes = res[0];
+    })
+    return specificRes;
+}
+
+setInterval(checkLoop, 1000 * 5);
